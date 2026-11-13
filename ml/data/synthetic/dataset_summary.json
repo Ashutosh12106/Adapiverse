@@ -1,0 +1,31 @@
+{
+  "disclaimer": "CRITICAL NOTICE: This dataset is synthetically generated using Item Response Theory (IRT) and educational learning curves for Phase 1 DKT model pre-training and hyperparameter calibration. It is strictly kept separate from real student quiz attempts in the live SQLite database. Never present synthetic-data results as real student results.",
+  "total_students": 1000,
+  "train_students": 800,
+  "test_students": 200,
+  "train_interactions": 23986,
+  "test_interactions": 6065,
+  "num_concepts": 20,
+  "concepts": [
+    "A* Search & Heuristics",
+    "Search Algorithms",
+    "Turing Test",
+    "Intelligent Agents",
+    "AI Principles",
+    "Core Fundamentals",
+    "Supervised Learning",
+    "Unsupervised Learning",
+    "Reinforcement Learning",
+    "Classification & Regression",
+    "Clustering Algorithms",
+    "Decision Trees & Ensembles",
+    "Machine Learning Fundamentals",
+    "ML Concepts",
+    "Neural Networks",
+    "Backpropagation & Optimization",
+    "Loss Functions",
+    "Overfitting & Regularization",
+    "Natural Language Processing",
+    "Computer Vision"
+  ]
+}

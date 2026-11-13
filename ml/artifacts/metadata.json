@@ -1,0 +1,23 @@
+{
+  "model_name": "AdaptiveVerse-DKT-LSTM",
+  "version": "1.0.0",
+  "framework": "PyTorch 2.6.0",
+  "architecture": "LSTM (embed_dim=32, hidden_dim=64, num_layers=1)",
+  "parameter_count": 27700,
+  "created_at": "2026-10-28T17:09:34.072841",
+  "hardware_target": "MacBook Air M1 (8GB RAM) - Lightweight CPU inference",
+  "training_data": {
+    "source": "SYNTHETIC_EDUCATIONAL_BENCHMARK",
+    "disclaimer": "Initial calibration dataset synthetically generated using Item Response Theory. Stored in ml/data/synthetic. NEVER presented as real student results.",
+    "num_train_students": 800,
+    "num_test_students": 200
+  },
+  "evaluation_results": {
+    "test_auc": 0.6321,
+    "test_accuracy": 0.6442,
+    "test_f1": 0.756,
+    "test_precision": 0.6728,
+    "test_recall": 0.8626,
+    "test_bce_loss": 0.6333
+  }
+}

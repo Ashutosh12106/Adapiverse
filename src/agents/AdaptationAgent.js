@@ -13,6 +13,72 @@ import {
  */
 export const DIFFICULTY_LEVELS = ["beginner", "intermediate", "advanced"];
 
+/**
+ * Generates human-readable explanation strictly derived from Q-learning state, action, and reward.
+ */
+export function generateAdaptiveDecisionExplanation({
+  stateKey,
+  action,
+  reward,
+  currentDifficulty,
+  nextDifficulty,
+  isCorrect,
+  targetTopic,
+}) {
+  const parts = (stateKey || "beginner:prior_mastery:none:low").split(":");
+  const diffTier = parts[0] || currentDifficulty || "beginner";
+  const masteryTier = parts[1] || "prior_mastery";
+  const recentResult = parts[2] || "none";
+  const struggleTier = parts[3] || "low";
+
+  const curFormatted =
+    diffTier.charAt(0).toUpperCase() + diffTier.slice(1);
+  const nextFormatted =
+    (nextDifficulty || diffTier).charAt(0).toUpperCase() +
+    (nextDifficulty || diffTier).slice(1);
+
+  const formattedReward =
+    (reward ?? 0) >= 0 ? `+${reward ?? 0}` : `${reward}`;
+
+  const wasCorrect =
+    typeof isCorrect === "boolean" ? isCorrect : recentResult === "correct";
+
+  switch (action) {
+    case Q_ACTIONS.INCREASE_DIFFICULTY:
+      if (wasCorrect) {
+        if (nextFormatted !== curFormatted) {
+          return `Advance to ${nextFormatted} — student demonstrated high mastery (${masteryTier}) and answered correctly (Reward: ${formattedReward}).`;
+        }
+        return `Maintain Advanced — student is excelling at top challenge tier with consistent mastery (${formattedReward} reward).`;
+      }
+      return `Explore Higher Challenge — system policy is probing adaptive tolerance at ${nextFormatted} (Reward: ${formattedReward}).`;
+
+    case Q_ACTIONS.DECREASE_DIFFICULTY:
+      if (nextFormatted !== curFormatted) {
+        return `Decrease to ${nextFormatted} — struggle trend [${struggleTier}] detected, reducing difficulty to relieve cognitive load (Reward: ${formattedReward}).`;
+      }
+      return `Reinforce Beginner — consolidating core concepts to rebuild confidence (Reward: ${formattedReward}).`;
+
+    case Q_ACTIONS.REINFORCE_WEAK_CONCEPT:
+      return targetTopic
+        ? `Reinforce Weak Concept — Q-learning policy prioritized targeted practice on "${targetTopic}" (Reward: ${formattedReward}).`
+        : `Reinforce Weak Concept — student encountered struggle points, pivoting to foundational reinforcement.`;
+
+    case Q_ACTIONS.MAINTAIN_DIFFICULTY:
+    default:
+      if (masteryTier === "med_mastery") {
+        return `Maintain ${curFormatted} — consolidating mastery within Zone of Proximal Development (Reward: ${formattedReward}).`;
+      }
+      if (masteryTier === "high_mastery") {
+        return `Maintain ${curFormatted} — strong performance observed, consolidating mastery at this level.`;
+      }
+      if (struggleTier === "high" || struggleTier === "med") {
+        return `Maintain ${curFormatted} — student is adjusting to current concepts, maintaining level before scaling.`;
+      }
+      return `Maintain ${curFormatted} — steady progression, building conceptual consistency at current difficulty.`;
+  }
+}
+
 export class AdaptationAgent {
   constructor(options = {}) {
     this.difficultyLevels = options.difficultyLevels || DIFFICULTY_LEVELS;
@@ -69,14 +135,31 @@ export class AdaptationAgent {
     // 3. Map Q-learning action to pedagogical application outcome
     let nextDifficulty = currentDifficulty;
     let recommendedAction = "quiz";
+    let targetTopic = null;
     let reason = "";
     let feedbackMessage = "";
+
+    // Identify weak concept candidate if remediation is chosen
+    const dktWeakest = studentState.dktMastery?.weakest_concept;
+    const sqliteWeak =
+      studentState.weakTopic &&
+      studentState.weakTopic !== "No quiz data yet" &&
+      studentState.weakTopic !== "None (High Mastery)"
+        ? studentState.weakTopic
+        : null;
+    const identifiedWeakTopic =
+      dktWeakest ||
+      sqliteWeak ||
+      studentState.weakConcepts?.[0]?.concept ||
+      (selectedSubject === "Machine Learning"
+        ? "Supervised Learning"
+        : "A* Search & Heuristics");
 
     switch (action) {
       case Q_ACTIONS.INCREASE_DIFFICULTY:
         nextDifficulty = this.shiftDifficulty(currentDifficulty, 1);
         recommendedAction = "quiz";
-        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue}) based on state [${stateKey}].`;
+        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue.toFixed(4)}) based on state [${stateKey}].`;
         if (isCorrect) {
           feedbackMessage =
             nextDifficulty !== currentDifficulty
@@ -90,7 +173,7 @@ export class AdaptationAgent {
       case Q_ACTIONS.DECREASE_DIFFICULTY:
         nextDifficulty = this.shiftDifficulty(currentDifficulty, -1);
         recommendedAction = "quiz";
-        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue}) to relieve cognitive strain.`;
+        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue.toFixed(4)}) to relieve cognitive strain.`;
         if (isCorrect) {
           feedbackMessage = `Correct! Q-Learning consolidated learning at ${nextDifficulty} difficulty.`;
         } else {
@@ -98,39 +181,52 @@ export class AdaptationAgent {
         }
         break;
 
-      case Q_ACTIONS.EXPLAIN:
-        nextDifficulty = currentDifficulty;
-        recommendedAction = "explanation";
-        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue}) to provide targeted concept explanation.`;
-        if (isCorrect) {
-          feedbackMessage = "Correct! Q-Learning suggests asking Teacher Emilian for deeper conceptual context.";
-        } else {
-          feedbackMessage = `Incorrect. Correct answer: ${correctAnswer}. Let's ask Teacher Emilian to explain this concept in detail.`;
-        }
-        break;
+      case Q_ACTIONS.REINFORCE_WEAK_CONCEPT: {
+        targetTopic = identifiedWeakTopic;
+        recommendedAction = "reinforce";
+        // Consolidate at current level or step down if student had consecutive misses
+        const consecutiveIncorrect = Array.isArray(studentState.recentAttempts)
+          ? studentState.recentAttempts.filter((a) => !a.isCorrect).length
+          : 0;
+        nextDifficulty =
+          consecutiveIncorrect >= 2
+            ? this.shiftDifficulty(currentDifficulty, -1)
+            : currentDifficulty;
 
-      case Q_ACTIONS.REVIEW:
-        nextDifficulty = this.shiftDifficulty(currentDifficulty, -1);
-        recommendedAction = "review";
-        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue}) for foundational review.`;
+        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue.toFixed(4)}) targeting weak concept "${targetTopic}".`;
         feedbackMessage = isCorrect
-          ? `Correct! Reviewing foundational concepts to reinforce retention at ${nextDifficulty}.`
-          : `Incorrect. Correct answer: ${correctAnswer}. Reviewing foundational principles to eliminate misconceptions.`;
+          ? `Correct! Great progress on ${targetTopic} — reinforcing this concept to ensure complete mastery.`
+          : `Incorrect. Correct answer: ${correctAnswer}. Q-Learning identified "${targetTopic}" as needing reinforcement and will provide targeted practice.`;
         break;
+      }
 
       case Q_ACTIONS.MAINTAIN_DIFFICULTY:
       default:
         nextDifficulty = currentDifficulty;
         recommendedAction = "quiz";
-        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue}) to build consistency at current difficulty.`;
+        reason = `Q-Learning policy selected [${action}] (Q=${selection.qValue.toFixed(4)}) to build consistency at current difficulty.`;
         feedbackMessage = isCorrect
           ? `Correct! Reinforcing proficiency at the ${currentDifficulty} level.`
           : `Incorrect. Correct answer: ${correctAnswer}. Let's try another question at ${currentDifficulty} level.`;
         break;
     }
 
-    // 4. Calculate reward
-    const reward = this.qLearning.calculateReward(studentState, evaluation, action);
+    // 4. Calculate reward with DKT mastery gain awareness
+    const currentMastery =
+      studentState.dktMastery?.average_mastery ??
+      (studentState.accuracy ? studentState.accuracy / 100 : 0.5);
+    const priorMastery =
+      evaluation.priorMastery !== undefined
+        ? evaluation.priorMastery
+        : currentMastery - (isCorrect ? 0.05 : -0.05);
+    const masteryDelta = Math.round((currentMastery - priorMastery) * 1000) / 1000;
+
+    const reward = this.qLearning.calculateReward(
+      studentState,
+      evaluation,
+      action,
+      masteryDelta,
+    );
 
     // 5. Predict next state and perform Bellman Q-value update
     const predictedNextState = {
@@ -149,16 +245,36 @@ export class AdaptationAgent {
       nextStateKey,
     );
 
-    return {
+    const decisionReason = generateAdaptiveDecisionExplanation({
+      stateKey,
+      action,
+      reward,
+      currentDifficulty,
       nextDifficulty,
+      isCorrect,
+      targetTopic,
+    });
+
+    const isDKTActive = Boolean(
+      studentState.dktMastery && !studentState.dktMastery.is_cold_start,
+    );
+
+    return {
+      activeAgent: "Adaptation Agent",
+      selectedRLAction: action,
+      predictedMastery: currentMastery,
+      nextDifficulty,
+      targetTopic,
       recommendedSubject: selectedSubject,
       recommendedAction,
-      reason,
+      reason: decisionReason,
       feedbackMessage,
       qLearningMeta: {
-        mode: "Q-Learning",
+        mode: "Q-Learning (Phase 3 Loop)",
         state: stateKey,
+        stateComponents: this.qLearning.parseState(stateKey),
         action,
+        targetTopic,
         isExploration: selection.isExploration,
         reward,
         qValue: updateInfo.qValue,
@@ -167,6 +283,12 @@ export class AdaptationAgent {
         epsilon: this.qLearning.epsilon,
         learningRate: this.qLearning.learningRate,
         discountFactor: this.qLearning.discountFactor,
+        dktActive: isDKTActive,
+        reason: decisionReason,
+        nextDifficulty,
+        currentDifficulty,
+        activeAgent: "Adaptation Agent",
+        predictedMastery: currentMastery,
       },
     };
   }
@@ -185,30 +307,63 @@ export class AdaptationAgent {
 
     let nextDifficulty = currentDifficulty;
     let recommendedAction = "quiz";
+    let targetTopic = null;
 
     if (selection.action === Q_ACTIONS.INCREASE_DIFFICULTY) {
       nextDifficulty = this.shiftDifficulty(currentDifficulty, 1);
-    } else if (
-      selection.action === Q_ACTIONS.DECREASE_DIFFICULTY ||
-      selection.action === Q_ACTIONS.REVIEW
-    ) {
+    } else if (selection.action === Q_ACTIONS.DECREASE_DIFFICULTY) {
       nextDifficulty = this.shiftDifficulty(currentDifficulty, -1);
-      if (selection.action === Q_ACTIONS.REVIEW) recommendedAction = "review";
-    } else if (selection.action === Q_ACTIONS.EXPLAIN) {
-      recommendedAction = "explanation";
+    } else if (selection.action === Q_ACTIONS.REINFORCE_WEAK_CONCEPT) {
+      targetTopic =
+        studentState.dktMastery?.weakest_concept ||
+        (studentState.weakTopic && studentState.weakTopic !== "No quiz data yet"
+          ? studentState.weakTopic
+          : "Core Fundamentals");
+      recommendedAction = "reinforce";
     }
 
-    return {
+    const decisionReason = generateAdaptiveDecisionExplanation({
+      stateKey,
+      action: selection.action,
+      reward: 0,
+      currentDifficulty,
       nextDifficulty,
-      recommendedSubject: studentState.selectedSubject || "Artificial Intelligence",
+      targetTopic,
+    });
+
+    const isDKTActive = Boolean(
+      studentState.dktMastery && !studentState.dktMastery.is_cold_start,
+    );
+
+    const avgMastery =
+      studentState.dktMastery?.average_mastery ??
+      (studentState.accuracy ? studentState.accuracy / 100 : 0.5);
+
+    return {
+      activeAgent: "Adaptation Agent",
+      selectedRLAction: selection.action,
+      predictedMastery: avgMastery,
+      nextDifficulty,
+      targetTopic,
+      recommendedSubject:
+        studentState.selectedSubject || "Artificial Intelligence",
       recommendedAction,
-      reason: `Q-Learning policy recommendation (State=${stateKey}, Action=${selection.action}, Q=${selection.qValue})`,
+      reason: decisionReason,
       qLearningMeta: {
-        mode: "Q-Learning",
+        mode: "Q-Learning (Phase 3 Loop)",
         state: stateKey,
+        stateComponents: this.qLearning.parseState(stateKey),
         action: selection.action,
+        targetTopic,
         qValue: selection.qValue,
         epsilon: this.qLearning.epsilon,
+        dktActive: isDKTActive,
+        reward: 0,
+        reason: decisionReason,
+        nextDifficulty,
+        currentDifficulty,
+        activeAgent: "Adaptation Agent",
+        predictedMastery: avgMastery,
       },
     };
   }

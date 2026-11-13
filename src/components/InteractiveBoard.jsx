@@ -32,6 +32,16 @@ export const InteractiveBoard = ({
   const qAction = qTelemetry?.action || "none";
   const qReward = qTelemetry?.reward ?? 0;
 
+  const dktMastery = learningState?.dktMastery || null;
+  const dktNextProb = dktMastery
+    ? Math.round((dktMastery.predicted_next_prob ?? 0.5) * 100)
+    : null;
+  const questionTopic = quizQuestion?.topic;
+  const questionDKTProb =
+    dktMastery?.topic_mastery && questionTopic && dktMastery.topic_mastery[questionTopic] !== undefined
+      ? Math.round(dktMastery.topic_mastery[questionTopic] * 100)
+      : dktNextProb;
+
   return (
     <group position={[3.5, 0.5, -14.5]} rotation={[0, -0.22, 0]}>
       {/* 3D Smartboard Outer Metallic Frame */}
@@ -156,24 +166,53 @@ export const InteractiveBoard = ({
             </div>
             <div>
               <strong style={{ color: "#94a3b8" }}>RL Policy Action:</strong>
-              <div style={{ color: "#38bdf8", fontWeight: "700" }}>{qAction}</div>
+              <div style={{ color: "#38bdf8", fontWeight: "700", textTransform: "capitalize" }}>
+                {(qAction || "none").replace(/_/g, " ")}
+              </div>
             </div>
+          </div>
+
+          {/* Weak concept / Target concept indicator */}
+          <div
+            style={{
+              marginTop: "6px",
+              fontSize: "11px",
+              color: "#cbd5e1",
+              background: "rgba(30, 41, 59, 0.5)",
+              padding: "4px 8px",
+              borderRadius: "6px",
+              border: "1px solid rgba(255, 255, 255, 0.08)",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span style={{ color: "#94a3b8" }}>
+              {qTelemetry?.targetTopic ? "RL Target Concept:" : "Weak Concept:"}
+            </span>
+            <span style={{ color: "#fbbf24", fontWeight: "700" }}>
+              {qTelemetry?.targetTopic || learningState?.weakTopic || "None yet"}
+            </span>
           </div>
 
           <div
             style={{
-              marginTop: "8px",
+              marginTop: "6px",
               fontSize: "11px",
               color: "#94a3b8",
               display: "flex",
               justifyContent: "space-between",
-              padding: "4px 8px",
+              padding: "2px 8px",
             }}
           >
             <span>
-              <strong>State:</strong> <code>{qState}</code>
+              <strong>State:</strong> <code style={{ fontSize: "10px" }}>{qState}</code>
             </span>
             <span>
+              <strong>Q-Val:</strong>{" "}
+              <span style={{ color: "#c084fc", fontWeight: "700" }}>
+                {Number(qTelemetry?.qValue ?? 0).toFixed(3)}
+              </span>{" "}
               <strong>Reward:</strong>{" "}
               <span
                 style={{
@@ -186,11 +225,86 @@ export const InteractiveBoard = ({
             </span>
           </div>
 
+          {/* Deep Knowledge Tracing (DKT) Telemetry on Board */}
+          {dktMastery && (
+            <div
+              style={{
+                marginTop: "6px",
+                fontSize: "11px",
+                color: "#cbd5e1",
+                background: "rgba(30, 41, 59, 0.6)",
+                padding: "6px 8px",
+                borderRadius: "8px",
+                border: "1px solid rgba(168, 85, 247, 0.25)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "4px",
+                }}
+              >
+                <span
+                  style={{
+                    color: "#c084fc",
+                    fontWeight: "800",
+                    fontSize: "10px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px",
+                  }}
+                >
+                  🧠 DKT KNOWLEDGE TRACING
+                </span>
+                <span
+                  style={{
+                    fontSize: "9px",
+                    background: dktMastery.is_cold_start
+                      ? "rgba(100, 116, 139, 0.3)"
+                      : "rgba(168, 85, 247, 0.25)",
+                    color: dktMastery.is_cold_start ? "#94a3b8" : "#e9d5ff",
+                    padding: "1px 6px",
+                    borderRadius: "6px",
+                    fontWeight: "700",
+                  }}
+                >
+                  {dktMastery.is_cold_start
+                    ? "Baseline Prior"
+                    : `Traced (${dktMastery.realAttemptsCount || questionsAnswered} Qs)`}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: "11px",
+                }}
+              >
+                <span>
+                  <strong style={{ color: "#94a3b8" }}>P(Next Correct):</strong>{" "}
+                  <span style={{ color: "#38bdf8", fontWeight: "800" }}>
+                    {dktNextProb !== null ? `${dktNextProb}%` : "50%"}
+                  </span>
+                </span>
+                <span>
+                  <strong style={{ color: "#94a3b8" }}>Focus:</strong>{" "}
+                  <span style={{ color: "#fb7185", fontWeight: "700" }}>
+                    {dktMastery.weakest_concept
+                      ? dktMastery.weakest_concept.split(" ")[0]
+                      : "None"}
+                  </span>
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Active 3D Quiz Display on Board */}
           {quizQuestion && (
             <div
               style={{
-                marginTop: "12px",
+                marginTop: "10px",
                 background: "rgba(15, 23, 42, 0.9)",
                 border: "1px solid #0284c7",
                 borderRadius: "12px",
@@ -199,13 +313,67 @@ export const InteractiveBoard = ({
             >
               <div
                 style={{
-                  fontSize: "12px",
-                  fontWeight: "800",
-                  color: "#38bdf8",
-                  marginBottom: "6px",
+                  display: "flex",
+                  gap: "6px",
+                  flexWrap: "wrap",
+                  marginBottom: "8px",
                 }}
               >
-                📝 Active Quiz Question ({difficulty}):
+                <span
+                  style={{
+                    fontSize: "10px",
+                    fontWeight: "800",
+                    background: "rgba(2, 132, 199, 0.3)",
+                    border: "1px solid rgba(56, 189, 248, 0.4)",
+                    color: "#38bdf8",
+                    padding: "2px 6px",
+                    borderRadius: "6px",
+                  }}
+                >
+                  📚 {quizQuestion.subject || subject}
+                </span>
+                <span
+                  style={{
+                    fontSize: "10px",
+                    fontWeight: "800",
+                    background: "rgba(168, 85, 247, 0.3)",
+                    border: "1px solid rgba(192, 132, 252, 0.4)",
+                    color: "#c084fc",
+                    padding: "2px 6px",
+                    borderRadius: "6px",
+                  }}
+                >
+                  🎯 {quizQuestion.topic || "Core Fundamentals"}
+                </span>
+                <span
+                  style={{
+                    fontSize: "10px",
+                    fontWeight: "800",
+                    background: "rgba(245, 158, 11, 0.3)",
+                    border: "1px solid rgba(251, 191, 36, 0.4)",
+                    color: "#fbbf24",
+                    padding: "2px 6px",
+                    borderRadius: "6px",
+                    textTransform: "capitalize",
+                  }}
+                >
+                  ⚡ {quizQuestion.difficulty || difficulty}
+                </span>
+                {questionDKTProb !== null && (
+                  <span
+                    style={{
+                      fontSize: "10px",
+                      fontWeight: "800",
+                      background: "rgba(16, 185, 129, 0.25)",
+                      border: "1px solid rgba(52, 211, 153, 0.4)",
+                      color: "#34d399",
+                      padding: "2px 6px",
+                      borderRadius: "6px",
+                    }}
+                  >
+                    🧠 DKT: {questionDKTProb}%
+                  </span>
+                )}
               </div>
               <div
                 style={{

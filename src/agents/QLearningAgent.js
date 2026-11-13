@@ -16,16 +16,23 @@ export const Q_ACTIONS = {
   INCREASE_DIFFICULTY: "increase_difficulty",
   MAINTAIN_DIFFICULTY: "maintain_difficulty",
   DECREASE_DIFFICULTY: "decrease_difficulty",
-  EXPLAIN: "explain",
-  REVIEW: "review",
+  REINFORCE_WEAK_CONCEPT: "reinforce_weak_concept",
+  // Backward compatibility aliases
+  EXPLAIN: "reinforce_weak_concept",
+  REVIEW: "reinforce_weak_concept",
 };
 
-export const ACTION_LIST = Object.values(Q_ACTIONS);
+export const ACTION_LIST = [
+  Q_ACTIONS.INCREASE_DIFFICULTY,
+  Q_ACTIONS.MAINTAIN_DIFFICULTY,
+  Q_ACTIONS.DECREASE_DIFFICULTY,
+  Q_ACTIONS.REINFORCE_WEAK_CONCEPT,
+];
 
 export const DEFAULT_HYPERPARAMETERS = {
-  learningRate: 0.1, // α: rate of value adjustment
-  discountFactor: 0.9, // γ: value of future expected rewards
-  epsilon: 0.2, // ε: exploration probability in ε-greedy
+  learningRate: 0.15, // α: rate of value adjustment
+  discountFactor: 0.85, // γ: value of future expected rewards
+  epsilon: 0.15, // ε: exploration probability in ε-greedy
   baseUrl: "http://localhost:3001",
 };
 
@@ -54,6 +61,7 @@ export class QLearningAgent {
       reward: 0,
       qValue: 0,
       epsilon: this.epsilon,
+      dktActive: false,
       timestamp: new Date().toISOString(),
     };
 
@@ -63,7 +71,14 @@ export class QLearningAgent {
 
   /**
    * Encodes student state into a discrete, deterministic string representation.
-   * State format: `${difficulty}:${performanceTier}:${recentResult}:${struggleTier}`
+   * Features:
+   * 1. Difficulty: "beginner" | "intermediate" | "advanced"
+   * 2. Predicted Mastery (via Phase 1 DKT model or safe accuracy fallback):
+   *    "high_mastery" (>= 0.70) | "med_mastery" (0.45 - 0.69) | "low_mastery" (< 0.45) | "prior_mastery"
+   * 3. Recent Performance: "correct" | "incorrect" | "none"
+   * 4. Struggle Trend: "low" | "med" | "high" (consecutive incorrect answers)
+   *
+   * State format: `${difficulty}:${masteryTier}:${recentResult}:${struggleTier}`
    *
    * @param {Object} studentState
    * @param {Object} [evaluation]
@@ -73,23 +88,40 @@ export class QLearningAgent {
     const difficulty =
       studentState.currentDifficulty || studentState.difficulty || "beginner";
 
-    // Performance tier
-    const answered = studentState.questionsAnswered || 0;
-    const accuracy =
-      answered === 0
-        ? 0
-        : studentState.accuracy !== undefined
-          ? studentState.accuracy
-          : Math.round(((studentState.correctAnswers || 0) / answered) * 100);
+    // 1. Mastery Tier: Try Phase 1 Deep Knowledge Tracing (DKT) first
+    let masteryTier = "prior_mastery";
+    const dkt = studentState.dktMastery;
 
-    let performanceTier = "none";
-    if (answered > 0) {
-      if (accuracy >= 75) performanceTier = "high";
-      else if (accuracy >= 50) performanceTier = "med";
-      else performanceTier = "low";
+    if (
+      dkt &&
+      !dkt.is_cold_start &&
+      typeof dkt.average_mastery === "number" &&
+      !Number.isNaN(dkt.average_mastery)
+    ) {
+      const avg = dkt.average_mastery;
+      if (avg >= 0.70) masteryTier = "high_mastery";
+      else if (avg >= 0.45) masteryTier = "med_mastery";
+      else masteryTier = "low_mastery";
+    } else {
+      // Safe Fallback: Derive mastery tier from historical accuracy
+      const answered = studentState.questionsAnswered || 0;
+      const accuracy =
+        answered === 0
+          ? 0
+          : studentState.accuracy !== undefined
+            ? studentState.accuracy
+            : Math.round(((studentState.correctAnswers || 0) / answered) * 100);
+
+      if (answered > 0) {
+        if (accuracy >= 75) masteryTier = "high_mastery";
+        else if (accuracy >= 50) masteryTier = "med_mastery";
+        else masteryTier = "low_mastery";
+      } else {
+        masteryTier = "prior_mastery";
+      }
     }
 
-    // Recent result
+    // 2. Recent Result
     let recentResult = "none";
     if (evaluation && typeof evaluation.isCorrect === "boolean") {
       recentResult = evaluation.isCorrect ? "correct" : "incorrect";
@@ -102,7 +134,7 @@ export class QLearningAgent {
         : "incorrect";
     }
 
-    // Struggle tier (calculated from consecutive incorrect answers)
+    // 3. Struggle Tier (consecutive incorrect answers)
     let consecutiveIncorrect = 0;
     if (Array.isArray(studentState.recentAttempts)) {
       for (const attempt of studentState.recentAttempts) {
@@ -110,7 +142,11 @@ export class QLearningAgent {
         else break;
       }
     }
-    if (evaluation && evaluation.isCorrect === false && recentResult === "incorrect") {
+    if (
+      evaluation &&
+      evaluation.isCorrect === false &&
+      recentResult === "incorrect"
+    ) {
       consecutiveIncorrect = Math.max(1, consecutiveIncorrect);
     }
 
@@ -118,7 +154,23 @@ export class QLearningAgent {
     if (consecutiveIncorrect >= 2) struggleTier = "high";
     else if (consecutiveIncorrect === 1) struggleTier = "med";
 
-    return `${difficulty}:${performanceTier}:${recentResult}:${struggleTier}`;
+    return `${difficulty}:${masteryTier}:${recentResult}:${struggleTier}`;
+  }
+
+  /**
+   * Helper to decompose state key into descriptive parts for UI presentation.
+   *
+   * @param {string} stateKey
+   * @returns {{ difficulty: string, masteryTier: string, recentResult: string, struggleTier: string }}
+   */
+  parseState(stateKey = "") {
+    const parts = (stateKey || "beginner:prior_mastery:none:low").split(":");
+    return {
+      difficulty: parts[0] || "beginner",
+      masteryTier: parts[1] || "prior_mastery",
+      recentResult: parts[2] || "none",
+      struggleTier: parts[3] || "low",
+    };
   }
 
   /**
@@ -215,60 +267,102 @@ export class QLearningAgent {
   }
 
   /**
-   * Calculates the pedagogical reward function based on student performance and action suitability.
+   * Calculates the pedagogical reward function based on educational outcome and policy alignment.
    *
-   * Reward Structure:
-   * - Base correctness: +5.0 (correct) / -5.0 (incorrect)
-   * - High mastery streak: +5.0 bonus (total +10.0)
-   * - Repeated struggle: -3.0 penalty (total -8.0)
-   * - Policy alignment:
-   *    * Advancing when mastery is shown: +2.0
-   *    * Remediation (review/explain/decrease) when struggling: +2.0
-   *    * Advancing while struggling: -4.0 penalty
+   * Reward Design:
+   * 1. Direct Outcome:
+   *    - Correct response: +3.0
+   *    - Incorrect response: -3.0
+   * 2. Mastery & Learning Dynamics:
+   *    - High mastery demonstrated (>= 0.70): +2.0
+   *    - Repeated struggle (>= 2 misses): -2.5 penalty
+   *    - DKT Mastery delta (M_t+1 - M_t): +4.0 * deltaM (when available)
+   * 3. Pedagogical Action Alignment:
+   *    - Action INCREASE_DIFFICULTY:
+   *        * When student demonstrated high mastery: +2.5
+   *        * When student is struggling (low mastery or repeated miss): -4.0 (penalize cognitive overload)
+   *    - Action DECREASE_DIFFICULTY:
+   *        * When student is struggling: +2.5 (reward cognitive relief)
+   *        * When student has high mastery: -2.0 (penalize regression)
+   *    - Action REINFORCE_WEAK_CONCEPT:
+   *        * When student missed a question or has weak concept: +3.0 (reward targeted remediation)
+   *        * When student subsequently answers correctly on reinforced concept: +1.5
+   *    - Action MAINTAIN_DIFFICULTY:
+   *        * In moderate mastery zone (0.45 - 0.70): +2.0 (reward ZPD consolidation)
    *
    * @param {Object} studentState
    * @param {Object} evaluation - { isCorrect: boolean }
    * @param {string} selectedAction
+   * @param {number} [masteryDelta=0]
    * @returns {number}
    */
-  calculateReward(studentState = {}, evaluation = {}, selectedAction = "") {
+  calculateReward(
+    studentState = {},
+    evaluation = {},
+    selectedAction = "",
+    masteryDelta = 0,
+  ) {
     const isCorrect = Boolean(evaluation.isCorrect);
     let reward = 0;
 
-    if (isCorrect) {
-      reward += 5.0;
+    // 1. Direct Outcome
+    reward += isCorrect ? 3.0 : -3.0;
 
-      // Bonus for consecutive correct answers
-      const answered = studentState.questionsAnswered || 0;
-      const correct = studentState.correctAnswers || 0;
-      if (answered >= 2 && correct / answered >= 0.75) {
-        reward += 5.0; // Strong learning improvement
-      }
+    // 2. Mastery & Struggle Analysis
+    const dkt = studentState.dktMastery;
+    const avgMastery = dkt?.average_mastery ?? (studentState.accuracy ? studentState.accuracy / 100 : 0.5);
+    const isHighMastery = avgMastery >= 0.70;
+    const isLowMastery = avgMastery < 0.45;
 
-      // Action alignment
-      if (selectedAction === Q_ACTIONS.INCREASE_DIFFICULTY) {
-        reward += 2.0;
-      }
-    } else {
-      reward -= 5.0;
+    const recentAttempts = studentState.recentAttempts || [];
+    const consecutiveMisses = recentAttempts.filter((a) => !a.isCorrect).length;
+    const isStruggling = consecutiveMisses >= 2 || (!isCorrect && isLowMastery);
 
-      // Repeated struggle penalty
-      const recentAttempts = studentState.recentAttempts || [];
-      const consecutiveMisses = recentAttempts.filter((a) => !a.isCorrect).length;
-      if (consecutiveMisses >= 2) {
-        reward -= 3.0; // Repeated struggle (-8 total)
-      }
+    if (isHighMastery) {
+      reward += 2.0;
+    }
+    if (isStruggling) {
+      reward -= 2.5;
+    }
 
-      // Action alignment when struggling
-      if (
-        selectedAction === Q_ACTIONS.DECREASE_DIFFICULTY ||
-        selectedAction === Q_ACTIONS.EXPLAIN ||
-        selectedAction === Q_ACTIONS.REVIEW
-      ) {
-        reward += 2.0; // Proper pedagogical remediation
-      } else if (selectedAction === Q_ACTIONS.INCREASE_DIFFICULTY) {
-        reward -= 4.0; // Inappropriate difficulty increase during struggle
-      }
+    // Dynamic DKT Mastery gain reward
+    if (typeof masteryDelta === "number" && !Number.isNaN(masteryDelta)) {
+      reward += Math.max(-2.0, Math.min(4.0, masteryDelta * 4.0));
+    }
+
+    // 3. Action-to-State Alignment
+    switch (selectedAction) {
+      case Q_ACTIONS.INCREASE_DIFFICULTY:
+        if (isCorrect && isHighMastery) {
+          reward += 2.5; // Timely difficulty scaling
+        } else if (isStruggling) {
+          reward -= 4.0; // Inappropriate cognitive overload
+        }
+        break;
+
+      case Q_ACTIONS.DECREASE_DIFFICULTY:
+        if (isStruggling) {
+          reward += 2.5; // Appropriate cognitive load relief
+        } else if (isHighMastery && isCorrect) {
+          reward -= 2.0; // Unnecessary challenge reduction
+        }
+        break;
+
+      case Q_ACTIONS.REINFORCE_WEAK_CONCEPT:
+        if (!isCorrect || isStruggling || studentState.weakTopic) {
+          reward += 3.0; // Targeted remediation of conceptual weakness
+        }
+        if (isCorrect) {
+          reward += 1.5; // Successfully mastered reinforced concept
+        }
+        break;
+
+      case Q_ACTIONS.MAINTAIN_DIFFICULTY:
+      default:
+        if (!isHighMastery && !isLowMastery) {
+          reward += 2.0; // Zone of Proximal Development consolidation
+        }
+        break;
     }
 
     return Math.round(reward * 100) / 100;
